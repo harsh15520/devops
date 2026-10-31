@@ -1,0 +1,16 @@
+{
+  "name": "devops-automation-poc",
+  "version": "1.0.0",
+  "description": "Minimal Express application demonstrating a containerized DevOps delivery lifecycle",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
