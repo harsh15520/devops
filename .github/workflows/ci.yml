@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: devops-automation-poc/app
+  IMAGE_DIR: devops-automation-poc
+  IMAGE_NAME: devops-automation-poc
+  CONTAINER_NAME: devops-automation-poc-ci
+  PORT: 3000
+
+jobs:
+  build-test-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Run tests (npm test)
+        working-directory: ${{ env.APP_DIR }}
+        run: npm test
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          # Reproducible build timestamp: the commit's own author date (ISO 8601),
+          # so re-running CI for the same commit always yields the same value.
+          build_timestamp="$(git show -s --format=%cI "${{ github.sha }}")"
+          echo "commit_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "build_timestamp=${build_timestamp}" >> "$GITHUB_OUTPUT"
+          echo "Resolved GIT_COMMIT_SHA=${{ github.sha }}"
+          echo "Resolved BUILD_TIMESTAMP=${build_timestamp}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg GIT_COMMIT_SHA="${{ steps.meta.outputs.commit_sha }}" \
+            --build-arg BUILD_TIMESTAMP="${{ steps.meta.outputs.build_timestamp }}" \
+            --build-arg PORT="${{ env.PORT }}" \
+            -t "${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.commit_sha }}" \
+            "${{ env.IMAGE_DIR }}"
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name "${{ env.CONTAINER_NAME }}" \
+            -p "${{ env.PORT }}:${{ env.PORT }}" \
+            -e PORT="${{ env.PORT }}" \
+            "${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.commit_sha }}"
+
+      - name: Wait for container health check
+        run: |
+          for i in $(seq 1 20); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' "${{ env.CONTAINER_NAME }}" 2>/dev/null || echo "starting")"
+            echo "Attempt $i: health=$status"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              echo "Container reported unhealthy"
+              docker logs "${{ env.CONTAINER_NAME }}"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "Timed out waiting for a healthy status"
+          docker logs "${{ env.CONTAINER_NAME }}"
+          exit 1
+
+      - name: Verify endpoints
+        run: |
+          set -eu
+          echo "GET /"
+          curl -fsS "http://localhost:${{ env.PORT }}/"
+          echo
+          echo "GET /health"
+          curl -fsS "http://localhost:${{ env.PORT }}/health"
+          echo
+
+      - name: Verify /version reports the expected commit SHA
+        run: |
+          set -eu
+          actual_commit="$(curl -fsS "http://localhost:${{ env.PORT }}/version" | node -e "
+            let data = '';
+            process.stdin.on('data', chunk => { data += chunk; });
+            process.stdin.on('end', () => { process.stdout.write(JSON.parse(data).commit); });
+          ")"
+          expected_commit="${{ steps.meta.outputs.commit_sha }}"
+          echo "expected=${expected_commit} actual=${actual_commit}"
+          if [ "${actual_commit}" != "${expected_commit}" ]; then
+            echo "Commit SHA mismatch between /version and the GitHub Actions checkout"
+            exit 1
+          fi
+
+      - name: Stop and clean up containers
+        if: always()
+        run: |
+          docker logs "${{ env.CONTAINER_NAME }}" || true
+          docker rm -f "${{ env.CONTAINER_NAME }}" || true

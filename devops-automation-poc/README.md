@@ -99,11 +99,66 @@ docker compose logs -f app
 docker compose down
 ```
 
-## Known limitations (Milestone 1)
+## Continuous integration
 
-- No CI/CD pipeline yet (GitHub Actions is planned for a later milestone).
-- No remote deployment target.
+A GitHub Actions pipeline builds, tests and verifies this application on
+every change. The workflow file lives at the repository root (one level up
+from this folder) at `.github/workflows/ci.yml`, since that is where this
+project's actual Git repository root is. See
+[docs/pipeline-flow.md](docs/pipeline-flow.md) for the full flow diagram and
+rationale.
+
+### Trigger conditions
+
+- Push to `main`
+- Pull requests targeting `main`
+- Manual trigger via `workflow_dispatch` (the "Run workflow" button on the
+  Actions tab)
+
+### Execution stages
+
+1. Checkout the repository.
+2. Set up Node.js 24 with npm dependency caching.
+3. `npm ci` in `app/`.
+4. `npm test` in `app/`.
+5. Resolve build metadata: the real commit SHA (`github.sha`) and a
+   reproducible build timestamp (the commit's own author date, so the same
+   commit always yields the same timestamp regardless of when CI runs).
+6. `docker build`, tagging the image with the commit SHA and baking in
+   `GIT_COMMIT_SHA` / `BUILD_TIMESTAMP` as build args.
+7. Start the container and wait for its Docker `HEALTHCHECK` to report
+   `healthy` (polled, with a bounded retry loop).
+8. Verify `/` and `/health` respond successfully.
+9. Verify `/version` reports the exact commit SHA that was checked out.
+10. Stop and remove the container (always runs, even on failure, via
+    `if: always()`), printing its logs first for diagnosis.
+
+### Failure behavior
+
+If any stage fails — a failing test, a broken Docker build, an unhealthy
+container, or a `/version` commit mismatch — the job stops at that step and
+is reported as failed in the Actions tab and on the commit/PR status check.
+The cleanup step still runs so no container is left behind. No later stage
+(e.g. the Docker build) runs if an earlier one (e.g. `npm test`) fails,
+since steps run sequentially in one job and a failing step halts the job by
+default.
+
+### Inspecting workflow runs
+
+- GitHub UI: repository → **Actions** tab → select the **CI** workflow →
+  select a run to see per-step logs, timing and the final status.
+- Command line (requires the `gh` CLI): `gh run list` and `gh run view
+  <run-id> --log`.
+- A failed run's cleanup step still logs the container's output before
+  removing it, so `docker logs` output for a failed health check or
+  endpoint check is visible in the Actions log for that step.
+
+## Known limitations
+
+- No remote deployment target (out of scope through Milestone 2).
+- No Docker Hub / registry publishing yet (images are built and verified
+  in CI but not pushed anywhere).
 - The Git commit SHA reported by `/version` falls back to `"unknown"` when
-  the application is not run from inside a Git repository (e.g. a stripped
-  build context without `.git`); it can be supplied explicitly via the
-  `GIT_COMMIT_SHA` environment variable or Docker build arg.
+  the application is run outside CI and outside a Git repository (e.g. a
+  stripped build context without `.git`, and no `GIT_COMMIT_SHA` build arg
+  supplied); CI always supplies a real value.
