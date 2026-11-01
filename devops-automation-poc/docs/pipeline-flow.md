@@ -81,8 +81,22 @@ this milestone).
 ## Controlled failure demonstration (Phase 4)
 
 A temporary modification to `app/tests/app.test.js` on a short-lived branch
-(never merged to `main`) asserts the wrong HTTP status for `/health`, which
-fails `npm test` at step 4 — the job stops there and never reaches the
-Docker build/run/verify steps. Reverting the change on that branch restores
-a passing pipeline. See the Milestone 2 final report for the actual run
-links/results of this demonstration.
+(`ci-failure-demo`, never merged to `main`) asserted the wrong HTTP status
+for `/health` (`201` instead of the real `200`). A pull request from that
+branch into `main` (PR #1) triggered two real GitHub Actions runs:
+
+- **Failing run** —
+  [41284912198](https://github.com/harsh15520/devops/actions/runs/41284912198),
+  commit `0c8fb53`: `npm test` failed at step 5; steps 6–11 (resolve
+  metadata, Docker build, start container, health wait, endpoint checks,
+  version check) were all **skipped**; step 12 (cleanup) still ran
+  successfully with nothing to clean up.
+- **Fixed run** —
+  [41284971284](https://github.com/harsh15520/devops/actions/runs/41284971284),
+  commit `8d949eb`: reverting the test assertion to `200` restored a fully
+  green run — all 12 steps succeeded, including the `/version` commit-SHA
+  match against `8d949eb`.
+
+This confirms a failing test blocks the Docker build/run/verify stages, and
+correcting it restores pipeline success, without ever landing the
+intentional failure on `main`.
