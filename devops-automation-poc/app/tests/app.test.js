@@ -28,9 +28,7 @@ test('GET / returns application name, version and status', async () => {
 
 test('GET /health returns 200 with structured health information', async () => {
   const res = await fetch(`${baseUrl}/health`);
-  // INTENTIONAL CI FAILURE DEMO (Milestone 2, Phase 4) — /health actually
-  // returns 200; this wrong expectation is reverted before merge.
-  assert.equal(res.status, 201);
+  assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.status, 'healthy');
   assert.equal(typeof body.uptimeSeconds, 'number');
